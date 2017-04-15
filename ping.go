@@ -1,12 +1,12 @@
 package ping
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
 	"net"
-	"os"
-	"os/signal"
 	"sync"
 	"syscall"
 	"time"
@@ -28,7 +28,10 @@ var (
 )
 
 // NewPinger returns a new Pinger struct pointer
-func NewPinger(addr string) (*Pinger, error) {
+func NewPinger(ctx context.Context, addr string) (*Pinger, error) {
+	if ctx == nil {
+		return nil, errors.New("You should provide a context!")
+	}
 	ipaddr, err := net.ResolveIPAddr("ip", addr)
 	if err != nil {
 		return nil, err
@@ -45,6 +48,8 @@ func NewPinger(addr string) (*Pinger, error) {
 		ipv4:    isIPv4(ipaddr.IP),
 		size:    timeSliceLength,
 
+		ctx: ctx,
+
 		done: make(chan bool),
 	}, nil
 }
@@ -53,55 +58,46 @@ func NewPinger(addr string) (*Pinger, error) {
 type Pinger struct {
 	// Interval is the wait time between each packet send. Default is 1s.
 	Interval time.Duration
-
 	// Timeout specifies a timeout before ping exits, regardless of how many
 	// packets have been received.
 	Timeout time.Duration
-
 	// Count tells pinger to stop after sending (and receiving) Count echo
 	// packets. If this option is not specified, pinger will operate until
 	// interrupted.
 	Count int
-
 	// Number of packets sent
 	PacketsSent int
-
 	// Number of packets received
 	PacketsRecv int
-
 	// rtts is all of the Rtts
 	rtts []time.Duration
-
 	// OnRecv is called when Pinger receives and processes a packet
 	OnRecv func(*Packet)
-
 	// OnFinish is called when Pinger exits
 	OnFinish func(*Statistics)
-
 	// stop chan bool
 	done chan bool
+
+	ctx context.Context
 
 	ipaddr *net.IPAddr
 	addr   string
 
-	ipv4     bool
 	source   string
 	size     int
 	sequence int
 	network  string
+	ipv4     bool
 }
 
 // Packet represents a received and processed ICMP echo packet.
 type Packet struct {
 	// Rtt is the round-trip time it took to ping.
 	Rtt time.Duration
-
 	// IPAddr is the address of the host being pinged.
 	IPAddr *net.IPAddr
-
 	// NBytes is the number of bytes in the message.
 	Nbytes int
-
 	// Seq is the ICMP sequence number.
 	Seq int
 }
@@ -213,14 +209,9 @@ func (p *Pinger) run() {
 
 	timeout := time.NewTicker(p.Timeout)
 	interval := time.NewTicker(p.Interval)
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-	signal.Notify(c, syscall.SIGTERM)
 
 	for {
 		select {
-		case <-c:
-			close(p.done)
 		case <-p.done:
 			wg.Wait()
 			return
@@ -238,6 +229,9 @@ func (p *Pinger) run() {
 			if err != nil {
 				fmt.Println("FATAL: ", err.Error())
 			}
+		case <-p.ctx.Done():
+			wg.Wait()
+			return
 		default:
 			if p.Count > 0 && p.PacketsRecv >= p.Count {
 				close(p.done)
@@ -314,10 +308,9 @@ func (p *Pinger) recvICMP(
 					if neterr.Timeout() {
 						// Read timeout
 						continue
-					} else {
-						close(p.done)
-						return
 					}
+					close(p.done)
+					return
 				}
 			}
 			recv <- &packet{bytes: bytes, nbytes: n}
