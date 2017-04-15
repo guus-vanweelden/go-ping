@@ -1,46 +1,3 @@
-// Package ping is an ICMP ping library seeking to emulate the unix "ping"
-// command.
-//
-// Here is a very simple example that sends & receives 3 packets:
-//
-//	pinger, err := ping.NewPinger("www.google.com")
-//	if err != nil {
-//		panic(err)
-//	}
-//
-//	pinger.Count = 3
-//	pinger.Run() // blocks until finished
-//	stats := pinger.Statistics() // get send/receive/rtt stats
-//
-// Here is an example that emulates the unix ping command:
-//
-//	pinger, err := ping.NewPinger("www.google.com")
-//	if err != nil {
-//		fmt.Printf("ERROR: %s\n", err.Error())
-//		return
-//	}
-//
-//	pinger.OnRecv = func(pkt *ping.Packet) {
-//		fmt.Printf("%d bytes from %s: icmp_seq=%d time=%v\n",
-//			pkt.Nbytes, pkt.IPAddr, pkt.Seq, pkt.Rtt)
-//	}
-//	pinger.OnFinish = func(stats *ping.Statistics) {
-//		fmt.Printf("\n--- %s ping statistics ---\n", stats.Addr)
-//		fmt.Printf("%d packets transmitted, %d packets received, %v%% packet loss\n",
-//			stats.PacketsSent, stats.PacketsRecv, stats.PacketLoss)
-//		fmt.Printf("round-trip min/avg/max/stddev = %v/%v/%v/%v\n",
-//			stats.MinRtt, stats.AvgRtt, stats.MaxRtt, stats.StdDevRtt)
-//	}
-//
-//	fmt.Printf("PING %s (%s):\n", pinger.Addr(), pinger.IPAddr())
-//	pinger.Run()
-//
-// It sends ICMP packet(s) and waits for a response. If it receives a response,
-// it calls the "receive" callback. When it's finished, it calls the "finish"
-// callback.
-//
-// For a full ping example, see "cmd/ping/ping.go".
-//
 package ping
 
 import (
@@ -77,22 +34,15 @@ func NewPinger(addr string) (*Pinger, error) {
 		return nil, err
 	}
 
-	var ipv4 bool
-	if isIPv4(ipaddr.IP) {
-		ipv4 = true
-	} else if isIPv6(ipaddr.IP) {
-		ipv4 = false
-	}
-
 	return &Pinger{
 		ipaddr:   ipaddr,
 		addr:     addr,
 		Interval: time.Second,
-		Timeout:  time.Second * 100000,
+		Timeout:  15 * time.Second,
 		Count:    -1,
 
 		network: "udp",
-		ipv4:    ipv4,
+		ipv4:    isIPv4(ipaddr.IP),
 		size:    timeSliceLength,
 
 		done: make(chan bool),
@@ -112,9 +62,6 @@ type Pinger struct {
 	// packets. If this option is not specified, pinger will operate until
 	// interrupted.
 	Count int
-
-	// Debug runs in debug mode
-	Debug bool
 
 	// Number of packets sent
 	PacketsSent int
@@ -142,11 +89,6 @@ type Pinger struct {
 	size     int
 	sequence int
 	network  string
-}
-
-type packet struct {
-	bytes  []byte
-	nbytes int
 }
 
 // Packet represents a received and processed ICMP echo packet.
@@ -201,22 +143,13 @@ type Statistics struct {
 
 // SetIPAddr sets the ip address of the target host.
 func (p *Pinger) SetIPAddr(ipaddr *net.IPAddr) {
-	var ipv4 bool
-	if isIPv4(ipaddr.IP) {
-		ipv4 = true
-	} else if isIPv6(ipaddr.IP) {
-		ipv4 = false
-	}
-
 	p.ipaddr = ipaddr
 	p.addr = ipaddr.String()
-	p.ipv4 = ipv4
+	p.ipv4 = isIPv4(ipaddr.IP)
 }
 
 // IPAddr returns the ip address of the target host.
-func (p *Pinger) IPAddr() *net.IPAddr {
-	return p.ipaddr
-}
+func (p *Pinger) IPAddr() *net.IPAddr { return p.ipaddr }
 
 // SetAddr resolves and sets the ip address of the target host, addr can be a
 // DNS name like "www.google.com" or IP like "127.0.0.1".
@@ -232,33 +165,26 @@ func (p *Pinger) SetAddr(addr string) error {
 }
 
 // Addr returns the string ip address of the target host.
-func (p *Pinger) Addr() string {
-	return p.addr
-}
+func (p *Pinger) Addr() string { return p.addr }
 
 // SetPrivileged sets the type of ping pinger will send.
 // false means pinger will send an "unprivileged" UDP ping.
 // true means pinger will send a "privileged" raw ICMP ping.
 // NOTE: setting to true requires that it be run with super-user privileges.
 func (p *Pinger) SetPrivileged(privileged bool) {
+	p.network = "udp"
 	if privileged {
 		p.network = "ip"
-	} else {
-		p.network = "udp"
 	}
 }
 
 // Privileged returns whether pinger is running in privileged mode.
-func (p *Pinger) Privileged() bool {
-	return p.network == "ip"
-}
+func (p *Pinger) Privileged() bool { return p.network == "ip" }
 
 // Run runs the pinger. This is a blocking function that will exit when it's
 // done. If Count or Interval are not specified, it will run continuously until
 // it is interrupted.
-func (p *Pinger) Run() {
-	p.run()
-}
+func (p *Pinger) Run() { p.run() }
 
 func (p *Pinger) run() {
 	var conn *icmp.PacketConn
@@ -282,6 +208,7 @@ func (p *Pinger) run() {
 	err := p.sendICMP(conn)
 	if err != nil {
 		fmt.Println(err.Error())
+		return
 	}
 
 	timeout := time.NewTicker(p.Timeout)
@@ -322,10 +249,8 @@ func (p *Pinger) run() {
 }
 
 func (p *Pinger) finish() {
-	handler := p.OnFinish
-	if handler != nil {
-		s := p.Statistics()
-		handler(s)
+	if p.OnFinish != nil {
+		p.OnFinish(p.Statistics())
 	}
 }
 
@@ -395,15 +320,16 @@ func (p *Pinger) recvICMP(
 					}
 				}
 			}
-
 			recv <- &packet{bytes: bytes, nbytes: n}
 		}
 	}
 }
 
 func (p *Pinger) processPacket(recv *packet) error {
-	var bytes []byte
-	var proto int
+	var (
+		bytes []byte
+		proto int
+	)
 	if p.ipv4 {
 		if p.network == "ip" {
 			bytes = ipv4Payload(recv.bytes)
@@ -436,7 +362,7 @@ func (p *Pinger) processPacket(recv *packet) error {
 	case *icmp.Echo:
 		outPkt.Rtt = time.Since(bytesToTime(pkt.Data[:timeSliceLength]))
 		outPkt.Seq = pkt.Seq
-		p.PacketsRecv += 1
+		p.PacketsRecv++
 	default:
 		// Very bad, not sure how this can happen
 		return fmt.Errorf("Error, invalid ICMP echo reply. Body type: %T, %s",
@@ -444,20 +370,16 @@ func (p *Pinger) processPacket(recv *packet) error {
 	}
 
 	p.rtts = append(p.rtts, outPkt.Rtt)
-	handler := p.OnRecv
-	if handler != nil {
-		handler(outPkt)
+	if p.OnRecv != nil {
+		p.OnRecv(outPkt)
 	}
-
 	return nil
 }
 
 func (p *Pinger) sendICMP(conn *icmp.PacketConn) error {
-	var typ icmp.Type
+	var typ icmp.Type = ipv6.ICMPTypeEchoRequest
 	if p.ipv4 {
 		typ = ipv4.ICMPTypeEcho
-	} else {
-		typ = ipv6.ICMPTypeEchoRequest
 	}
 
 	var dst net.Addr = p.ipaddr
@@ -489,8 +411,8 @@ func (p *Pinger) sendICMP(conn *icmp.PacketConn) error {
 				}
 			}
 		}
-		p.PacketsSent += 1
-		p.sequence += 1
+		p.PacketsSent++
+		p.sequence++
 		break
 	}
 	return nil
@@ -504,46 +426,4 @@ func (p *Pinger) listen(netProto string, source string) *icmp.PacketConn {
 		return nil
 	}
 	return conn
-}
-
-func byteSliceOfSize(n int) []byte {
-	b := make([]byte, n)
-	for i := 0; i < len(b); i++ {
-		b[i] = 1
-	}
-
-	return b
-}
-
-func ipv4Payload(b []byte) []byte {
-	if len(b) < ipv4.HeaderLen {
-		return b
-	}
-	hdrlen := int(b[0]&0x0f) << 2
-	return b[hdrlen:]
-}
-
-func bytesToTime(b []byte) time.Time {
-	var nsec int64
-	for i := uint8(0); i < 8; i++ {
-		nsec += int64(b[i]) << ((7 - i) * 8)
-	}
-	return time.Unix(nsec/1000000000, nsec%1000000000)
-}
-
-func isIPv4(ip net.IP) bool {
-	return len(ip.To4()) == net.IPv4len
-}
-
-func isIPv6(ip net.IP) bool {
-	return len(ip) == net.IPv6len
-}
-
-func timeToBytes(t time.Time) []byte {
-	nsec := t.UnixNano()
-	b := make([]byte, 8)
-	for i := uint8(0); i < 8; i++ {
-		b[i] = byte((nsec >> ((7 - i) * 8)) & 0xff)
-	}
-	return b
 }
