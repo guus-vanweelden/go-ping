@@ -25,6 +25,7 @@ const (
 var (
 	ipv4Proto = map[string]string{"ip": "ip4:icmp", "udp": "udp4"}
 	ipv6Proto = map[string]string{"ip": "ip6:ipv6-icmp", "udp": "udp6"}
+	resolver  = &net.Resolver{true}
 )
 
 // NewPinger returns a new Pinger struct pointer
@@ -32,20 +33,20 @@ func NewPinger(ctx context.Context, addr string) (*Pinger, error) {
 	if ctx == nil {
 		return nil, errors.New("You should provide a context!")
 	}
-	ipaddr, err := net.ResolveIPAddr("ip", addr)
+	ipaddrs, err := resolver.LookupIPAddr(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Pinger{
-		ipaddr:   ipaddr,
+		ipaddr:   ipaddrs[0],
 		addr:     addr,
 		Interval: time.Second,
 		Timeout:  15 * time.Second,
 		Count:    -1,
 
 		network: "udp",
-		ipv4:    isIPv4(ipaddr.IP),
+		ipv4:    isIPv4(ipaddrs[0].IP),
 		size:    timeSliceLength,
 
 		ctx: ctx,
@@ -80,7 +81,7 @@ type Pinger struct {
 
 	ctx context.Context
 
-	ipaddr *net.IPAddr
+	ipaddr net.IPAddr
 	addr   string
 
 	source   string
@@ -95,7 +96,7 @@ type Packet struct {
 	// Rtt is the round-trip time it took to ping.
 	Rtt time.Duration
 	// IPAddr is the address of the host being pinged.
-	IPAddr *net.IPAddr
+	IPAddr net.IPAddr
 	// NBytes is the number of bytes in the message.
 	Nbytes int
 	// Seq is the ICMP sequence number.
@@ -107,55 +108,46 @@ type Packet struct {
 type Statistics struct {
 	// PacketsRecv is the number of packets received.
 	PacketsRecv int
-
 	// PacketsSent is the number of packets sent.
 	PacketsSent int
-
 	// PacketLoss is the percentage of packets lost.
 	PacketLoss float64
-
 	// IPAddr is the address of the host being pinged.
-	IPAddr *net.IPAddr
-
+	IPAddr net.IPAddr
 	// Addr is the string address of the host being pinged.
 	Addr string
-
 	// Rtts is all of the round-trip times sent via this pinger.
 	Rtts []time.Duration
-
 	// MinRtt is the minimum round-trip time sent via this pinger.
 	MinRtt time.Duration
-
 	// MaxRtt is the maximum round-trip time sent via this pinger.
 	MaxRtt time.Duration
-
 	// AvgRtt is the average round-trip time sent via this pinger.
 	AvgRtt time.Duration
-
 	// StdDevRtt is the standard deviation of the round-trip times sent via
 	// this pinger.
 	StdDevRtt time.Duration
 }
 
 // SetIPAddr sets the ip address of the target host.
-func (p *Pinger) SetIPAddr(ipaddr *net.IPAddr) {
+func (p *Pinger) SetIPAddr(ipaddr net.IPAddr) {
 	p.ipaddr = ipaddr
 	p.addr = ipaddr.String()
 	p.ipv4 = isIPv4(ipaddr.IP)
 }
 
 // IPAddr returns the ip address of the target host.
-func (p *Pinger) IPAddr() *net.IPAddr { return p.ipaddr }
+func (p *Pinger) IPAddr() net.IPAddr { return p.ipaddr }
 
 // SetAddr resolves and sets the ip address of the target host, addr can be a
 // DNS name like "www.google.com" or IP like "127.0.0.1".
 func (p *Pinger) SetAddr(addr string) error {
-	ipaddr, err := net.ResolveIPAddr("ip", addr)
+	ipaddrs, err := resolver.LookupIPAddr(p.ctx, addr)
 	if err != nil {
 		return err
 	}
 
-	p.SetIPAddr(ipaddr)
+	p.SetIPAddr(ipaddrs[0])
 	p.addr = addr
 	return nil
 }
@@ -375,7 +367,7 @@ func (p *Pinger) sendICMP(conn *icmp.PacketConn) error {
 		typ = ipv4.ICMPTypeEcho
 	}
 
-	var dst net.Addr = p.ipaddr
+	var dst net.Addr = &p.ipaddr
 	if p.network == "udp" {
 		dst = &net.UDPAddr{IP: p.ipaddr.IP, Zone: p.ipaddr.Zone}
 	}
