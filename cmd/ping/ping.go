@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"time"
@@ -47,7 +48,7 @@ func main() {
 	}
 
 	host := flag.Arg(0)
-	pinger, err := ping.NewPinger(host)
+	pinger, err := ping.NewPinger(context.Background(), host)
 	if err != nil {
 		fmt.Printf("ERROR: %s\n", err.Error())
 		return
